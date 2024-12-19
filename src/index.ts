@@ -112,7 +112,28 @@ const app = new Elysia()
       exp: "7d"
     })
   )
-  .use(cookie())
+  .use(cookie());
+
+// Initialize services and log their status
+(async () => {
+  try {
+    // Test database connection
+    await db.select().from(users).limit(1);
+    await logger.info("Database connection established successfully");
+  } catch (error) {
+    await logger.error("Failed to connect to database", { error });
+  }
+
+  try {
+    // Test Redis connection
+    await security.isIPBlocked("test");
+    await logger.info("Redis connection established successfully");
+  } catch (error) {
+    await logger.error("Failed to connect to Redis", { error });
+  }
+})();
+
+app
   // Request logging middleware
   .derive(async ({ request }: { request: Request }) => {
     // Enrich request with security context
@@ -556,13 +577,24 @@ const app = new Elysia()
 
 // Handle shutdown gracefully
 process.on("SIGTERM", async () => {
+  await logger.info("Server shutting down...");
   await logger.flush();
   process.exit(0);
 });
 
 process.on("SIGINT", async () => {
+  await logger.info("Server shutting down...");
   await logger.flush();
   process.exit(0);
+});
+
+// Start the server
+app.listen(3000, () => {
+  logger.info("Server started", {
+    port: 3000,
+    environment: process.env.NODE_ENV || "development",
+    version: process.env.npm_package_version || "1.0.0"
+  });
 });
 
 export type App = typeof app;
