@@ -11,6 +11,7 @@ import { logger } from "./utils/logger";
 import { security } from "./utils/security";
 import type { SecurityContext } from "./utils/security";
 import * as dotenv from "dotenv";
+import { client } from "./utils/trigger";
 
 // Load environment variables
 dotenv.config();
@@ -321,6 +322,16 @@ app
           maxAge: 604800000 // 7 days
         });
 
+        // Emit signup event to Trigger.dev
+        await client.sendEvent({
+          name: "user.signup",
+          payload: {
+            userId: user.id,
+            email: user.email,
+            timestamp: new Date().toISOString()
+          }
+        });
+
         return {
           success: true,
           data: {
@@ -421,6 +432,18 @@ app
           maxAge: 604800000 // 7 days
         });
 
+        // Emit login event to Trigger.dev
+        await client.sendEvent({
+          name: "user.login",
+          payload: {
+            userId: user.id,
+            email: user.email,
+            timestamp: new Date().toISOString(),
+            ip: securityContext.ip,
+            userAgent: securityContext.userAgent
+          }
+        });
+
         return {
           success: true,
           data: {
@@ -506,8 +529,18 @@ app
   )
   .post(
     "/auth/logout",
-    async ({ cookie, setCookie }: { cookie: { auth?: string; refresh?: string }; setCookie: any }) => {
+    async ({
+      cookie,
+      setCookie,
+      auth
+    }: {
+      cookie: { auth?: string; refresh?: string };
+      setCookie: any;
+      auth: () => Promise<JWTPayload | null>;
+    }) => {
+      const user = await auth();
       const refreshToken = cookie.refresh;
+
       if (refreshToken) {
         try {
           // Delete the session
@@ -518,6 +551,18 @@ app
           if (session) {
             await db.delete(sessions).where(eq(sessions.id, session.id));
             await logger.info("User logged out", { userId: session.userId });
+
+            // Emit logout event to Trigger.dev
+            if (user) {
+              await client.sendEvent({
+                name: "user.logout",
+                payload: {
+                  userId: user.userId,
+                  email: user.email,
+                  timestamp: new Date().toISOString()
+                }
+              });
+            }
           }
         } catch (error) {
           await logger.error("Error during logout", { error });
@@ -576,26 +621,54 @@ app
   });
 
 // Handle shutdown gracefully
-process.on("SIGTERM", async () => {
-  await logger.info("Server shutting down...");
-  await logger.flush();
-  process.exit(0);
-});
+const shutdown = async (signal: string) => {
+  try {
+    await logger.info(`Received ${signal}. Starting graceful shutdown...`);
 
-process.on("SIGINT", async () => {
-  await logger.info("Server shutting down...");
-  await logger.flush();
-  process.exit(0);
-});
+    // Close the HTTP server
+    await app.stop();
+    await logger.info("HTTP server closed");
+
+    // Flush any remaining logs
+    await logger.info("Server shutdown complete");
+    await logger.flush();
+
+    process.exit(0);
+  } catch (error) {
+    await logger.error("Error during shutdown", { error });
+    await logger.flush();
+    process.exit(1);
+  }
+};
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
 
 // Start the server
-app.listen(3000, () => {
-  logger.info("Server started", {
-    port: 3000,
-    environment: process.env.NODE_ENV || "development",
-    version: process.env.npm_package_version || "1.0.0"
+try {
+  const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+  const server = app.listen(PORT, () => {
+    logger.info("Server started", {
+      port: PORT,
+      environment: process.env.NODE_ENV || "development",
+      version: process.env.npm_package_version || "1.0.0"
+    });
   });
-});
+
+  server.on("error", async (error: any) => {
+    if (error.code === "EADDRINUSE") {
+      await logger.error(`Port ${PORT} is already in use. Please make sure no other server is running on this port.`);
+    } else {
+      await logger.error("Server error occurred", { error });
+    }
+    await logger.flush();
+    process.exit(1);
+  });
+} catch (error) {
+  await logger.error("Failed to start server", { error });
+  await logger.flush();
+  process.exit(1);
+}
 
 export type App = typeof app;
 export default app;
