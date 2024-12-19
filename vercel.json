@@ -1,0 +1,13 @@
+{
+  "functions": {
+    "src/index.ts": {
+      "runtime": "bun@latest"
+    }
+  },
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "src/index.ts"
+    }
+  ]
+}
